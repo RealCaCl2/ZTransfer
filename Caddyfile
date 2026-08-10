@@ -1,0 +1,17 @@
+ztransfer.cacl2.top {
+    root * /var/www/ztransfer
+    file_server
+    encode zstd gzip
+
+    header Cache-Control "public, max-age=3600"
+    header X-Content-Type-Options nosniff
+    header X-Frame-Options DENY
+    header Referrer-Policy "no-referrer-when-downgrade"
+
+    log {
+        output file /var/log/caddy/ztransfer.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}

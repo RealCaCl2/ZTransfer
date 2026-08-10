@@ -1,0 +1,45 @@
+# Android / Gradle
+*.iml
+.gradle/
+.idea/
+build/
+app/build/
+local.properties
+key.properties
+*.apk
+*.APK
+*.aab
+*.jks
+*.keystore
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+coverage/
+
+# Local agent tooling
+.agents/
+.omo/
+.opencode/
+
+# Non-source promotional content
+marketing/
+website/
+
+# Internal documentation
+docs/
+
+# IDE
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Kotlin
+*.class
+
+# OS
+Thumbs.db

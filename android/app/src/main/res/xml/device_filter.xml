@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    USB device filter for Nikon cameras.
+    Matches any USB device from Nikon Corporation (vendor-id: 0x04B0 = 1200).
+
+    The camera must be set to PTP (Picture Transfer Protocol) or MTP mode
+    in its USB settings menu.  On Nikon Z-series cameras this is under:
+      Setup Menu → USB → MTP/PTP
+
+    Common Nikon USB product IDs for reference:
+      - 0x0428: Various Nikon DSLR / Z-series cameras
+      - 0x0429: Various Nikon cameras
+      - 0x0439: Nikon Z 6 / Z 7 series
+      - 0x043A: Nikon Z 50
+      - 0x0451: Nikon Z 8 / Z 9
+      - 0x0455: Nikon Z f / Z6 III
+
+    We match on vendor-id only so ALL Nikon cameras are detected.
+-->
+<resources>
+    <usb-device vendor-id="1200" />
+</resources>
