@@ -35,8 +35,8 @@
   "lastSync": "上次同步 — {fileName}",
   "syncNoProjectError": "未选择活动项目，请先创建一个。",
 
-  "autoShowOn": "自动放大: 开",
-  "autoShowOff": "自动放大: 关",
+  "autoShowOn": "新照片自动全屏 · 已开启",
+  "autoShowOff": "新照片自动全屏 · 已关闭",
 
   "phoneGallery": "手机相册",
 
@@ -73,7 +73,6 @@
   "unknown": "未知",
   "receivePhotos": "接收",
   "stopReceiving": "停止",
-  "disconnectCamera": "断开连接",
   "scanNetworkCamera": "扫描网络中的相机",
   "scanNetworkCameraInProgress": "正在扫描网络...",
   "scanCurrentNetworkStatus": "正在扫描当前 Wi-Fi 与热点网段...",

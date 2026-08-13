@@ -132,6 +132,16 @@ object PtpIpConstants {
     /** Best-effort CloseSession timeout after a successful pairing confirmation (ms). */
     const val PAIRING_CLOSE_TIMEOUT_MS = 3_000
 
+    /** Graceful CloseSession timeout for an explicit user disconnect (ms). */
+    const val DISCONNECT_CLOSE_TIMEOUT_MS = 3_000
+
+    /** Give Nikon firmware time to release the old command/event socket association. */
+    const val DISCONNECT_SETTLE_DELAY_MS = 750L
+
+    /** Retry a fresh command socket when an old session event arrives before InitCommandAck. */
+    const val INIT_COMMAND_MAX_ATTEMPTS = 3
+    const val INIT_STALE_SESSION_RETRY_DELAY_MS = 500L
+
     /** Picture-transfer socket connect timeout (ms). */
     const val TRANSFER_CONNECT_TIMEOUT_MS = 15_000
 

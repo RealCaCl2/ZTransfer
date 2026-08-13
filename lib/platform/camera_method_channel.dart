@@ -383,15 +383,6 @@ class CameraMethodChannel extends CameraPlatform {
   }
 
   @override
-  Future<void> disconnect() async {
-    try {
-      await _methodChannel.invokeMethod('disconnect');
-    } catch (e, st) {
-      appLogger.e('disconnect failed', error: e, stackTrace: st);
-    }
-  }
-
-  @override
   Stream<CameraEvent> get eventStream {
     _eventStream ??=
         _eventChannel.receiveBroadcastStream().map<CameraEvent>((dynamic data) {
@@ -651,6 +642,17 @@ class CameraMethodChannel extends CameraPlatform {
       return result;
     } catch (e, st) {
       appLogger.e('getStorageInfo failed', error: e, stackTrace: st);
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getSessionDiagnostics() async {
+    try {
+      return await _methodChannel.invokeMapMethod<String, dynamic>(
+        'getSessionDiagnostics',
+      );
+    } catch (e, st) {
+      appLogger.e('getSessionDiagnostics failed', error: e, stackTrace: st);
       return null;
     }
   }

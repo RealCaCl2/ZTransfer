@@ -281,13 +281,13 @@ abstract class AppLocalizations {
   /// No description provided for @autoShowOn.
   ///
   /// In en, this message translates to:
-  /// **'Auto-show: ON'**
+  /// **'Auto-fullscreen new photos · On'**
   String get autoShowOn;
 
   /// No description provided for @autoShowOff.
   ///
   /// In en, this message translates to:
-  /// **'Auto-show: OFF'**
+  /// **'Auto-fullscreen new photos · Off'**
   String get autoShowOff;
 
   /// No description provided for @phoneGallery.
@@ -481,12 +481,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Stop'**
   String get stopReceiving;
-
-  /// No description provided for @disconnectCamera.
-  ///
-  /// In en, this message translates to:
-  /// **'Disconnect'**
-  String get disconnectCamera;
 
   /// No description provided for @scanNetworkCamera.
   ///

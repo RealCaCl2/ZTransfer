@@ -149,6 +149,11 @@ class SyncNotifier extends _$SyncNotifier {
           clearCurrentObjectHandle: true,
           clearTransferMetrics: true,
         );
+        if (!event.listening) {
+          unawaited(
+            ref.read(galleryNotifierProvider.notifier).refreshLocalPhotos(),
+          );
+        }
       } else if (event is ConnectionStateChangedEvent && !event.connected) {
         state = state.copyWith(
           isListening: false,
@@ -163,6 +168,10 @@ class SyncNotifier extends _$SyncNotifier {
           status: SyncStatus.error,
           errorMessage: event.message,
           clearCurrentObjectHandle: true,
+        );
+        // The working copy may already be complete even if a later native operation failed.
+        unawaited(
+          ref.read(galleryNotifierProvider.notifier).refreshLocalPhotos(),
         );
         _scheduleErrorDismiss();
       }
@@ -204,11 +213,6 @@ class SyncNotifier extends _$SyncNotifier {
       // Add to the local gallery immediately
       appLogger.i('SyncNotifier: adding synced photo to gallery');
       ref.read(galleryNotifierProvider.notifier).addSyncedPhoto(photo);
-      // Refresh project metadata (photo counts) when a project is active.
-      if (ref.read(projectNotifierProvider).activeProject != null) {
-        ref.read(projectNotifierProvider.notifier).refresh();
-      }
-
       state = state.copyWith(
         status: SyncStatus.idle,
         totalSynced: state.totalSynced + 1,
@@ -217,6 +221,20 @@ class SyncNotifier extends _$SyncNotifier {
         clearCurrentObjectHandle: true,
       );
       _scheduleSuccessDismiss();
+
+      // Metadata refresh is secondary. It must not turn an already-visible completed photo into
+      // a sync failure.
+      if (ref.read(projectNotifierProvider).activeProject != null) {
+        try {
+          await ref.read(projectNotifierProvider.notifier).refresh();
+        } catch (e, st) {
+          appLogger.w(
+            'Project metadata refresh failed after sync',
+            error: e,
+            stackTrace: st,
+          );
+        }
+      }
     } catch (e) {
       state = state.copyWith(
         status: SyncStatus.error,

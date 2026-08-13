@@ -40,7 +40,9 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        channelHandler = CameraChannelHandler(this)
+        // The session owner lives in Application scope so Activity recreation (common when the
+        // app is backgrounded on OEM Android builds) cannot orphan the PTP/IP sockets.
+        channelHandler = (application as ZTransferApplication).cameraChannelHandler
 
         // Restore active project so new photos go to the right folder
         val activeId = channelHandler.projectStore.getActiveProjectId()
@@ -118,6 +120,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun onNikonFound(device: UsbDevice) {
+        if (!channelHandler.ensureProjectForConnection()) {
+            Log.w(TAG, "Ignoring Nikon USB connection until a project is created")
+            return
+        }
         if (usbManager.hasPermission(device)) {
             Log.i(TAG, "Permission already granted — connecting via USB transport")
             channelHandler.usbTransport.connectToDevice(device, usbManager)
@@ -182,6 +188,10 @@ class MainActivity : FlutterActivity() {
                     )
                     Log.i(TAG, "Permission result: granted=$granted")
                     if (granted && device != null) {
+                        if (!channelHandler.ensureProjectForConnection()) {
+                            Log.w(TAG, "Ignoring USB permission result without a project")
+                            return
+                        }
                         channelHandler.usbTransport.connectToDevice(
                             device, usbManager
                         )

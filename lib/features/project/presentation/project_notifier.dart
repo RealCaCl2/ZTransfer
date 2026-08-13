@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ztransfer/core/logger/app_logger.dart';
 import 'package:ztransfer/features/camera/data/camera_repository.dart';
@@ -21,12 +20,14 @@ class ProjectState {
   ProjectState copyWith({
     List<Project>? projects,
     Project? activeProject,
+    bool clearActiveProject = false,
     bool? isLoading,
     String? error,
   }) {
     return ProjectState(
       projects: projects ?? this.projects,
-      activeProject: activeProject ?? this.activeProject,
+      activeProject:
+          clearActiveProject ? null : activeProject ?? this.activeProject,
       isLoading: isLoading ?? this.isLoading,
       error: error,
     );
@@ -55,9 +56,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
   Future<void> _loadProjects() async {
     try {
       final raw = await _repo.listProjects();
-      if (raw.isNotEmpty) {
-        state = state.copyWith(projects: raw.map(Project.fromMap).toList());
-      }
+      state = state.copyWith(projects: raw.map(Project.fromMap).toList());
     } catch (e, st) {
       appLogger.e('_loadProjects failed', error: e, stackTrace: st);
       // Keep existing projects list — don't clear on error
@@ -71,6 +70,8 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     } else if (state.projects.isNotEmpty) {
       // Auto-select first project
       await setActiveProject(state.projects.first.id);
+    } else {
+      state = state.copyWith(clearActiveProject: true);
     }
   }
 
@@ -78,8 +79,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     final raw = await _repo.createProject(name);
     if (raw != null) {
       final project = Project.fromMap(raw);
-      state = state.copyWith(
-          projects: [project, ...state.projects]);
+      state = state.copyWith(projects: [project, ...state.projects]);
       // Auto-activate if no active project
       if (state.activeProject == null) {
         await setActiveProject(project.id);
@@ -104,7 +104,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
         if (state.projects.isNotEmpty) {
           await setActiveProject(state.projects.first.id);
         } else {
-          state = state.copyWith(activeProject: null);
+          state = state.copyWith(clearActiveProject: true);
         }
       }
     }

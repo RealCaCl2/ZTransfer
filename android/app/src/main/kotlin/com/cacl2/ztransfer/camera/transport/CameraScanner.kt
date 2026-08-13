@@ -60,7 +60,8 @@ object CameraScanner {
     data class ScanResult(
         val cameraIp: String,
         val cameraName: String,
-        val sessionId: Int
+        val sessionId: Int,
+        val localIp: String?,
     )
 
     /**
@@ -225,9 +226,9 @@ object CameraScanner {
                 val socket = Socket()
                 try {
                     socket.connect(InetSocketAddress(ip, PTP_PORT), CONNECT_TIMEOUT_MS)
-                    socket.close()
-                    Log.i(TAG, "probeIp $ip: ✓ port 15740 open")
-                    ScanResult(ip, "Nikon", 0)
+                    val localIp = socket.localAddress?.hostAddress
+                    Log.i(TAG, "probeIp $ip: ✓ port 15740 open via $localIp")
+                    ScanResult(ip, "Nikon", 0, localIp)
                 } catch (e: Exception) {
                     null
                 } finally {

@@ -19,8 +19,6 @@ class CameraRepository {
 
   Future<String?> connect() => _platform.connect();
 
-  Future<void> disconnect() => _platform.disconnect();
-
   // ── events ───────────────────────────────────────────────────────────────
 
   Stream<CameraEvent> get eventStream => _platform.eventStream;
@@ -47,8 +45,7 @@ class CameraRepository {
   Future<Map<String, dynamic>?> getExifData(String filePath) =>
       _platform.getExifData(filePath);
 
-  Future<bool> shareFile(String filePath) =>
-      _platform.shareFile(filePath);
+  Future<bool> shareFile(String filePath) => _platform.shareFile(filePath);
 
   Future<bool> shareMultipleFiles(List<String> filePaths) =>
       _platform.shareMultipleFiles(filePaths);
@@ -58,8 +55,7 @@ class CameraRepository {
 
   // ── Projects ────────────────────────────────────────────────────────────
 
-  Future<List<Map<String, dynamic>>> listProjects() =>
-      _platform.listProjects();
+  Future<List<Map<String, dynamic>>> listProjects() => _platform.listProjects();
 
   Future<Map<String, dynamic>?> createProject(String name) =>
       _platform.createProject(name);
@@ -70,26 +66,29 @@ class CameraRepository {
   Future<bool> deleteProject(String id, bool deletePhotos) =>
       _platform.deleteProject(id, deletePhotos);
 
-  Future<bool> setActiveProject(String? id) =>
-      _platform.setActiveProject(id);
+  Future<bool> setActiveProject(String? id) => _platform.setActiveProject(id);
 
   Future<Map<String, dynamic>?> getActiveProject() =>
       _platform.getActiveProject();
 
   // ── Transport ──────────────────────────────────────────────────────────
 
-  Future<String?> getTransportType() =>
-      _platform.getTransportType();
+  Future<String?> getTransportType() => _platform.getTransportType();
 
-  Future<int?> getBatteryLevel() =>
-      _platform.getBatteryLevel();
+  Future<int?> getBatteryLevel() => _platform.getBatteryLevel();
 
-  Future<Map<String, dynamic>?> getStorageInfo() =>
-      _platform.getStorageInfo();
+  Future<Map<String, dynamic>?> getStorageInfo() => _platform.getStorageInfo();
+
+  Future<Map<String, dynamic>?> getSessionDiagnostics() async {
+    if (_platform is CameraMethodChannel) {
+      return _platform.getSessionDiagnostics();
+    }
+    return null;
+  }
 
   Future<String?> connectWifi(String host) async {
     if (_platform is CameraMethodChannel) {
-      return (_platform as CameraMethodChannel).connectWifi(host);
+      return _platform.connectWifi(host);
     }
     return null;
   }
@@ -97,7 +96,7 @@ class CameraRepository {
   /// Connect preferring a specific transport ('USB' or 'WIFI').
   Future<String?> connectWithTransport(String transportType) async {
     if (_platform is CameraMethodChannel) {
-      return (_platform as CameraMethodChannel).connectWithTransport(transportType);
+      return _platform.connectWithTransport(transportType);
     }
     return null;
   }
@@ -105,7 +104,7 @@ class CameraRepository {
   Future<Map<String, dynamic>?> scanCamera() async {
     // Only CameraMethodChannel supports scanning; _DefaultCameraPlatform doesn't
     if (_platform is CameraMethodChannel) {
-      return (_platform as CameraMethodChannel).scanCamera();
+      return _platform.scanCamera();
     }
     return null;
   }

@@ -34,6 +34,7 @@ class GalleryState {
 class GalleryNotifier extends StateNotifier<GalleryState> {
   final Ref _ref;
   StreamSubscription<CameraEvent>? _eventSub;
+  int _loadRevision = 0;
 
   GalleryNotifier(this._ref) : super(const GalleryState()) {
     _init();
@@ -55,6 +56,7 @@ class GalleryNotifier extends StateNotifier<GalleryState> {
   }
 
   Future<void> _loadLocalPhotos() async {
+    final revision = ++_loadRevision;
     state = state.copyWith(isLoading: true);
     final repo = GalleryRepository();
     final projectId = _ref.read(projectNotifierProvider).activeProject?.id;
@@ -62,14 +64,22 @@ class GalleryNotifier extends StateNotifier<GalleryState> {
     try {
       final photos = await repo.listLocalPhotos(projectId: projectId);
       debugPrint('Gallery._loadLocalPhotos: loaded ${photos.length} photos');
+      if (revision != _loadRevision ||
+          _ref.read(projectNotifierProvider).activeProject?.id != projectId) {
+        return;
+      }
       state = state.copyWith(localPhotos: photos, isLoading: false);
     } catch (e) {
       debugPrint('Gallery._loadLocalPhotos error: $e');
-      state = state.copyWith(isLoading: false);
+      if (revision == _loadRevision) {
+        state = state.copyWith(isLoading: false);
+      }
     }
   }
 
   void addSyncedPhoto(PhotoItem photo) {
+    // A query started before this event must not overwrite the newly inserted photo.
+    _loadRevision++;
     final withoutDuplicate = state.localPhotos.where((existing) {
       if (photo.localPath != null && existing.localPath == photo.localPath) {
         return false;
@@ -78,6 +88,7 @@ class GalleryNotifier extends StateNotifier<GalleryState> {
     }).toList();
     state = state.copyWith(
       localPhotos: [photo, ...withoutDuplicate],
+      isLoading: false,
     );
   }
 
