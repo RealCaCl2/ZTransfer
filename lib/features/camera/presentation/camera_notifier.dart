@@ -83,7 +83,18 @@ class CameraNotifier extends _$CameraNotifier {
     final repo = ref.read(cameraRepositoryProvider);
     final connected = await repo.isConnected();
     if (connected) {
-      state = state.copyWith(status: CameraConnectionStatus.connected);
+      final transport = await repo.getTransportType();
+      final diagnostics = await repo.getSessionDiagnostics();
+      final restoredName = diagnostics?['cameraName'] as String?;
+      final restoredHost = diagnostics?['host'] as String?;
+      final restoredTransport =
+          transport ?? diagnostics?['transportType'] as String?;
+      state = state.copyWith(
+        status: CameraConnectionStatus.connected,
+        deviceName: restoredName?.isNotEmpty == true ? restoredName : null,
+        connectionType: _parseTransportType(restoredTransport),
+        ipAddress: restoredHost?.isNotEmpty == true ? restoredHost : null,
+      );
     }
   }
 
@@ -217,12 +228,6 @@ class CameraNotifier extends _$CameraNotifier {
         clearIp: true,
       );
     }
-  }
-
-  Future<void> disconnect() async {
-    final repo = ref.read(cameraRepositoryProvider);
-    await repo.disconnect();
-    state = const CameraState();
   }
 
   ConnectionType _parseTransportType(String? str) {

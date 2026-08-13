@@ -101,10 +101,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get syncNoProjectError => '未选择活动项目，请先创建一个。';
 
   @override
-  String get autoShowOn => '自动放大: 开';
+  String get autoShowOn => '新照片自动全屏 · 已开启';
 
   @override
-  String get autoShowOff => '自动放大: 关';
+  String get autoShowOff => '新照片自动全屏 · 已关闭';
 
   @override
   String get phoneGallery => '手机相册';
@@ -215,9 +215,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get stopReceiving => '停止';
-
-  @override
-  String get disconnectCamera => '断开连接';
 
   @override
   String get scanNetworkCamera => '扫描网络中的相机';

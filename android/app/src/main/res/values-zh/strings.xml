@@ -1,0 +1,7 @@
+<resources>
+    <string name="camera_connection_channel_name">相机连接</string>
+    <string name="camera_connection_channel_description">在后台保持 Nikon 无线连接</string>
+    <string name="camera_connection_notification_title">ZTransfer 已连接相机</string>
+    <string name="camera_connection_notification_connected">正在保持相机连接</string>
+    <string name="camera_connection_notification_listening">正在等待接收相机照片</string>
+</resources>

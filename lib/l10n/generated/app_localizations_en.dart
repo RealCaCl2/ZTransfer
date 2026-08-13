@@ -101,10 +101,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get syncNoProjectError => 'No active project. Create one first.';
 
   @override
-  String get autoShowOn => 'Auto-show: ON';
+  String get autoShowOn => 'Auto-fullscreen new photos · On';
 
   @override
-  String get autoShowOff => 'Auto-show: OFF';
+  String get autoShowOff => 'Auto-fullscreen new photos · Off';
 
   @override
   String get phoneGallery => 'Phone Gallery';
@@ -235,9 +235,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get stopReceiving => 'Stop';
-
-  @override
-  String get disconnectCamera => 'Disconnect';
 
   @override
   String get scanNetworkCamera => 'Scan for cameras';

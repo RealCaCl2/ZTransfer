@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:ztransfer/app_router.dart';
 import 'package:ztransfer/core/theme/app_colors.dart';
 import 'package:ztransfer/features/camera/presentation/camera_notifier.dart';
 import 'package:ztransfer/features/camera/presentation/widgets/connection_dialog.dart';
+import 'package:ztransfer/features/project/presentation/project_notifier.dart';
 import 'package:ztransfer/features/sync/presentation/sync_status_notifier.dart';
 import 'package:ztransfer/l10n/generated/app_localizations.dart';
 
@@ -20,9 +23,22 @@ class CameraStatusCard extends ConsumerWidget {
     final status = cameraState.status;
 
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
         if (status == CameraConnectionStatus.disconnected ||
             status == CameraConnectionStatus.error) {
+          await ref.read(projectNotifierProvider.notifier).refresh();
+          if (!context.mounted) return;
+          if (ref.read(projectNotifierProvider).projects.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  AppLocalizations.of(context).syncNoProjectError,
+                ),
+              ),
+            );
+            context.push(AppRoute.projects);
+            return;
+          }
           showDialog(
             context: context,
             builder: (_) => const ConnectionDialog(),
@@ -65,10 +81,6 @@ class CameraStatusCard extends ConsumerWidget {
                 if (cameraState.isConnected &&
                     cameraState.connectionType == ConnectionType.wifi)
                   _ReceiveButton(isListening: syncState.isListening),
-                if (cameraState.isConnected) ...[
-                  const SizedBox(width: 4),
-                  const _DisconnectButton(),
-                ],
                 if (status == CameraConnectionStatus.disconnected ||
                     status == CameraConnectionStatus.error)
                   _ConnectPrompt(status: status),
@@ -276,65 +288,6 @@ class _ReceiveButton extends ConsumerWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DisconnectButton extends ConsumerStatefulWidget {
-  const _DisconnectButton();
-
-  @override
-  ConsumerState<_DisconnectButton> createState() => _DisconnectButtonState();
-}
-
-class _DisconnectButtonState extends ConsumerState<_DisconnectButton> {
-  bool _disconnecting = false;
-
-  Future<void> _disconnect() async {
-    if (_disconnecting) return;
-    setState(() => _disconnecting = true);
-    await ref.read(cameraNotifierProvider.notifier).disconnect();
-    if (mounted) setState(() => _disconnecting = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context);
-    return Tooltip(
-      message: l10n.disconnectCamera,
-      child: Semantics(
-        button: true,
-        label: l10n.disconnectCamera,
-        child: GestureDetector(
-          onTap: _disconnecting ? null : _disconnect,
-          child: Container(
-            width: 32,
-            height: 32,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: AppColors.statusError.withAlpha(20),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: AppColors.statusError.withAlpha(75),
-              ),
-            ),
-            child: _disconnecting
-                ? const SizedBox(
-                    width: 15,
-                    height: 15,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: AppColors.statusError,
-                    ),
-                  )
-                : const Icon(
-                    Icons.link_off_rounded,
-                    color: AppColors.statusError,
-                    size: 17,
-                  ),
-          ),
         ),
       ),
     );

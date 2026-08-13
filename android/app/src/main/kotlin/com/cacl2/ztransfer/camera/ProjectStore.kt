@@ -84,9 +84,35 @@ class ProjectStore(context: Context) {
         ensureRoot()
         val json = loadJson() ?: return emptyList()
         val list = mutableListOf<Project>()
+        var metadataChanged = false
         for (i in 0 until json.length()) {
-            list.add(parseProject(json.getJSONObject(i)))
+            val obj = json.getJSONObject(i)
+            val stored = parseProject(obj)
+            val snapshot = ProjectPhotoIndex.scan(projectDir(stored.id))
+            val validStoredCover = stored.coverPhotoPath?.takeIf { File(it).isFile }
+            val actualCover = validStoredCover ?: snapshot.coverPhotoPath
+            val actualUpdatedAt = maxOf(stored.updatedAt, snapshot.newestModifiedAt)
+            if (stored.photoCount != snapshot.photoCount ||
+                stored.coverPhotoPath != actualCover ||
+                stored.updatedAt != actualUpdatedAt
+            ) {
+                obj.put("photoCount", snapshot.photoCount)
+                obj.put("coverPhotoPath", actualCover ?: "")
+                obj.put("updatedAt", actualUpdatedAt)
+                metadataChanged = true
+            }
+            list.add(
+                Project(
+                    id = stored.id,
+                    name = stored.name,
+                    coverPhotoPath = actualCover,
+                    createdAt = stored.createdAt,
+                    updatedAt = actualUpdatedAt,
+                    photoCount = snapshot.photoCount,
+                )
+            )
         }
+        if (metadataChanged) saveJson(json)
         list.sortedByDescending { it.updatedAt }
     }
 
@@ -239,7 +265,7 @@ class ProjectStore(context: Context) {
         return Project(
             id = obj.getString("id"),
             name = obj.getString("name"),
-            coverPhotoPath = obj.optString("coverPhotoPath", null),
+            coverPhotoPath = obj.optString("coverPhotoPath", "").takeIf { it.isNotEmpty() },
             createdAt = obj.optLong("createdAt", 0),
             updatedAt = obj.optLong("updatedAt", 0),
             photoCount = obj.optInt("photoCount", 0)

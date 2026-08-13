@@ -7,12 +7,15 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.PowerManager
 import android.util.Log
+import com.cacl2.ztransfer.CameraConnectionService
+import com.cacl2.ztransfer.camera.SharedPhotoPublisher
 import com.kw.ztransfer.NativePtpCore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +34,9 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.net.ConnectException
 import java.net.InetAddress
+import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.NoRouteToHostException
 import java.net.Socket
 import java.net.SocketException
@@ -159,6 +164,9 @@ class WifiTransport(
     private var lastError: String? = null
 
     @Volatile
+    private var connectionGeneration = 0L
+
+    @Volatile
     private var alive = false
 
     @Volatile
@@ -188,6 +196,14 @@ class WifiTransport(
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
+    private data class DiscoveredSocketRoute(
+        val host: String,
+        val localAddress: Inet4Address,
+    )
+
+    @Volatile
+    private var discoveredSocketRoute: DiscoveredSocketRoute? = null
+
     val currentHost: String
         get() = host
 
@@ -199,6 +215,15 @@ class WifiTransport(
 
     val hasLoadedProfile: Boolean
         get() = clientGuid != null
+
+    /** Reuse the exact source address from a successful discovery TCP probe. */
+    fun rememberDiscoveredRoute(targetHost: String, localIp: String?) {
+        val localAddress = localIp
+            ?.let { runCatching { InetAddress.getByName(it) as? Inet4Address }.getOrNull() }
+            ?: return
+        discoveredSocketRoute = DiscoveredSocketRoute(targetHost, localAddress)
+        Log.d(TAG, "[SOCKET] Remembered discovery route $localIp -> $targetHost")
+    }
 
     fun getClientGuidHex(): String = clientGuid?.toHex() ?: ""
 
@@ -234,7 +259,7 @@ class WifiTransport(
             return@withLock false
         }
         host = ip
-        cleanupConnection(emitDisconnected = isConnected)
+        cleanupConnectionAndJoin(emitDisconnected = isConnected)
         _connectionState.value = TransportState.Connecting
         lastError = null
         try {
@@ -259,7 +284,7 @@ class WifiTransport(
             log("保持单一 PTP/IP Session，不切换 Application Mode", "PTP")
             true
         } catch (cancelled: CancellationException) {
-            cleanupConnection(emitDisconnected = true)
+            cleanupConnectionAndJoin(emitDisconnected = true)
             throw cancelled
         } catch (error: Exception) {
             if (reportFailure) {
@@ -269,7 +294,7 @@ class WifiTransport(
                 // presses OK. A rejected reconnect is expected during that window.
                 lastError = error.message ?: error.javaClass.simpleName
                 Log.d(TAG, "[PAIRING] 正式连接尚未就绪：$lastError")
-                cleanupConnection(emitDisconnected = false)
+                cleanupConnectionAndJoin(emitDisconnected = false)
             }
             false
         }
@@ -281,7 +306,7 @@ class WifiTransport(
      */
     suspend fun startPairing(ip: String? = null): String? = connectionMutex.withLock {
         if (ip != null) host = ip
-        cleanupConnection(emitDisconnected = isConnected)
+        cleanupConnectionAndJoin(emitDisconnected = isConnected)
         _connectionState.value = TransportState.Connecting
         lastError = null
         expectedCameraGuid = null
@@ -312,7 +337,7 @@ class WifiTransport(
             schedulePairingTimeout()
             code
         } catch (cancelled: CancellationException) {
-            cleanupConnection(emitDisconnected = true)
+            cleanupConnectionAndJoin(emitDisconnected = true)
             throw cancelled
         } catch (error: Exception) {
             failConnection("无线配对启动失败", error)
@@ -374,16 +399,16 @@ class WifiTransport(
             }.onFailure {
                 log("配对确认后相机已结束会话：${it.message}", "PAIRING")
             }
-            cleanupConnection(emitDisconnected = false)
+            cleanupConnectionAndJoin(emitDisconnected = false)
             true
         } catch (cancelled: CancellationException) {
             pairingActive = false
-            cleanupConnection(emitDisconnected = false)
+            cleanupConnectionAndJoin(emitDisconnected = false)
             throw cancelled
         } catch (error: Exception) {
             pairingActive = false
             log("配对确认未完成：${error.message}", "PAIRING", "WARN")
-            cleanupConnection(emitDisconnected = false)
+            cleanupConnectionAndJoin(emitDisconnected = false)
             throw error
         }
     }
@@ -405,7 +430,7 @@ class WifiTransport(
 
     suspend fun waitForNextPhoto(
         timeoutMs: Int = PtpIpConstants.TRANSFER_COMMAND_TIMEOUT_MS,
-    ): TransferRecord {
+    ): TransferRecord? {
         val selectedTransferMode = privateValue(
             PRIVATE_VALUE_GROUP_TRANSFER,
             PRIVATE_VALUE_SELECTED_TRANSFER,
@@ -417,7 +442,8 @@ class WifiTransport(
         )
         checkOk(result, "AdvancedTransfer")
         if (result.data.isEmpty()) {
-            throw PtpException("AdvancedTransfer 返回空记录")
+            log("AdvancedTransfer 暂无待传对象，继续监听", "TRANSFER")
+            return null
         }
         val cursor = Cursor(result.data, "AdvancedTransfer")
         val record = TransferRecord(
@@ -467,6 +493,8 @@ class WifiTransport(
             fingerprintsMatch(record.objectHandle, totalSize, sameName)
         ) {
             log("重复文件已通过首尾指纹确认，跳过完整传输：$safeName", "DOWNLOAD")
+            emitDownloadedObject(record, remoteInfo, format, sameName, totalSize)
+            SharedPhotoPublisher.publish(context, sameName)
             return@withContext DownloadOutcome.SkippedDuplicate(sameName.absolutePath, totalSize)
         }
 
@@ -500,18 +528,10 @@ class WifiTransport(
             }
 
             val isRaw = finalFile.extension.equals("NEF", true) || format == PtpIpConstants.FMT_RAW
-            _events.emit(
-                TransportEvent.ObjectAdded(
-                    objectHandle = record.objectHandle,
-                    formatCode = format,
-                    fileName = finalFile.name,
-                    sizeBytes = totalSize,
-                    localPath = finalFile.absolutePath,
-                    width = remoteInfo?.width?.takeIf { it > 0 },
-                    height = remoteInfo?.height?.takeIf { it > 0 },
-                    isRaw = isRaw,
-                ),
-            )
+            emitDownloadedObject(record, remoteInfo, format, finalFile, totalSize, isRaw)
+            // The private working copy is already complete. Publishing a second MediaStore copy
+            // is best-effort and must not delay or suppress the UI event.
+            SharedPhotoPublisher.publish(context, finalFile)
             log("文件保存完成：${finalFile.name} ($totalSize bytes)", "DOWNLOAD")
             DownloadOutcome.Saved(finalFile.absolutePath, totalSize)
         } catch (error: Throwable) {
@@ -523,6 +543,28 @@ class WifiTransport(
             }
             throw error
         }
+    }
+
+    private suspend fun emitDownloadedObject(
+        record: TransferRecord,
+        remoteInfo: RemoteObjectInfo?,
+        format: Int,
+        file: File,
+        totalSize: Long,
+        isRaw: Boolean = file.extension.equals("NEF", true) || format == PtpIpConstants.FMT_RAW,
+    ) {
+        _events.emit(
+            TransportEvent.ObjectAdded(
+                objectHandle = record.objectHandle,
+                formatCode = format,
+                fileName = file.name,
+                sizeBytes = totalSize,
+                localPath = file.absolutePath,
+                width = remoteInfo?.width?.takeIf { it > 0 },
+                height = remoteInfo?.height?.takeIf { it > 0 },
+                isRaw = isRaw,
+            ),
+        )
     }
 
     suspend fun downloadAndSavePhoto(record: TransferRecord, saveDir: File): String? =
@@ -539,6 +581,7 @@ class WifiTransport(
         currentTransferBytes = 0L
         currentTransferTotalBytes = 0L
         acquireTransferLocks()
+        CameraConnectionService.start(context, listening = true)
         _events.tryEmit(TransportEvent.TransferStateChanged(listening = true))
     }
 
@@ -549,7 +592,14 @@ class WifiTransport(
         currentTransferProgress = 0.0
         currentTransferBytes = 0L
         currentTransferTotalBytes = 0L
-        releaseTransferLocks()
+        if (isConnected) {
+            // Connection-level locks remain held so the event channel can answer camera probes
+            // while the app is backgrounded, even when photo receiving is temporarily stopped.
+            CameraConnectionService.start(context, listening = false)
+        } else {
+            releaseTransferLocks()
+            CameraConnectionService.stop(context)
+        }
         _events.tryEmit(TransportEvent.TransferStateChanged(listening = false))
     }
 
@@ -617,7 +667,19 @@ class WifiTransport(
 
     override suspend fun disconnect() {
         connectionMutex.withLock {
-            cleanupConnection(emitDisconnected = isConnected || phase != SessionPhase.DISCONNECTED)
+            val shouldEmit = isConnected || phase != SessionPhase.DISCONNECTED
+            if (alive && sessionOpen) {
+                runCatching {
+                    closeSession(timeoutMs = PtpIpConstants.DISCONNECT_CLOSE_TIMEOUT_MS)
+                }.onFailure {
+                    log("断开前 CloseSession 失败，将强制关闭双通道：${it.message}", "SOCKET", "WARN")
+                }
+            }
+            cleanupConnectionAndJoin(
+                emitDisconnected = shouldEmit,
+                settleDelayMs = PtpIpConstants.DISCONNECT_SETTLE_DELAY_MS,
+            )
+            CameraConnectionService.stop(context)
         }
     }
 
@@ -663,6 +725,8 @@ class WifiTransport(
     override suspend fun getStorageInfo(): StorageInfo? = null
 
     override fun getSessionDiagnostics(): Map<String, Any> = mapOf(
+        "transportType" to transportType.name,
+        "cameraName" to (cameraName ?: ""),
         "host" to host,
         "port" to port,
         "connected" to isConnected,
@@ -713,29 +777,61 @@ class WifiTransport(
         val core = requireNativeCore()
         log("连接 $host:$port", "SOCKET")
 
-        val command = createSocket(connectTimeoutMs, commandTimeoutMs)
-        commandSocket = command
-        commandInput = command.getInputStream()
-        commandOutput = command.getOutputStream()
-        sendPacket(
-            commandOutput!!,
-            PtpIpConstants.PKT_INIT_CMD_REQ,
-            core.buildInitCommandPayload(guid, initiatorName),
-        )
-        val commandAck = receivePacket(commandInput!!)
-        if (commandAck.first == PtpIpConstants.PKT_INIT_FAIL) {
-            throw initFailure(commandAck.second)
+        val generation = ++connectionGeneration
+        var commandAck: Pair<Int, ByteArray>? = null
+        for (attempt in 1..PtpIpConstants.INIT_COMMAND_MAX_ATTEMPTS) {
+            val command = createSocket(connectTimeoutMs, commandTimeoutMs)
+            commandSocket = command
+            commandInput = command.getInputStream()
+            commandOutput = command.getOutputStream()
+            try {
+                sendPacket(
+                    commandOutput!!,
+                    PtpIpConstants.PKT_INIT_CMD_REQ,
+                    core.buildInitCommandPayload(guid, initiatorName),
+                )
+                val received = receivePacket(commandInput!!)
+                if (PtpIpHandshakePolicy.isStaleSessionPacketBeforeCommandAck(received.first) &&
+                    attempt < PtpIpConstants.INIT_COMMAND_MAX_ATTEMPTS
+                ) {
+                    log(
+                        "InitCommand 前收到旧会话事件包0x${received.first.toString(16)}，" +
+                            "关闭该 socket 后重试（$attempt/${PtpIpConstants.INIT_COMMAND_MAX_ATTEMPTS}）",
+                        "SOCKET",
+                        "WARN",
+                    )
+                    runCatching { command.close() }
+                    commandSocket = null
+                    commandInput = null
+                    commandOutput = null
+                    delay(PtpIpConstants.INIT_STALE_SESSION_RETRY_DELAY_MS * attempt)
+                    continue
+                }
+                commandAck = received
+                break
+            } catch (error: Exception) {
+                runCatching { command.close() }
+                commandSocket = null
+                commandInput = null
+                commandOutput = null
+                throw error
+            }
         }
-        if (commandAck.first != PtpIpConstants.PKT_INIT_CMD_ACK) {
-            throw PtpException("期望 InitCommandAck，实际包类型=0x${commandAck.first.toString(16)}")
+        val acceptedCommandAck = commandAck
+            ?: throw PtpException("InitCommand 重试后仍未收到响应")
+        if (acceptedCommandAck.first == PtpIpConstants.PKT_INIT_FAIL) {
+            throw initFailure(acceptedCommandAck.second)
         }
-        if (commandAck.second.size < 20) {
-            throw PtpException("InitCommandAck 数据不足：${commandAck.second.size}")
+        if (acceptedCommandAck.first != PtpIpConstants.PKT_INIT_CMD_ACK) {
+            throw PtpException("期望 InitCommandAck，实际包类型=0x${acceptedCommandAck.first.toString(16)}")
+        }
+        if (acceptedCommandAck.second.size < 20) {
+            throw PtpException("InitCommandAck 数据不足：${acceptedCommandAck.second.size}")
         }
         core.onCommandAccepted()
-        connectionNumber = readUInt32(commandAck.second, 0)
-        cameraGuid = commandAck.second.copyOfRange(4, 20).toHex()
-        cameraName = decodeNullTerminatedUtf16(commandAck.second, 20).ifBlank { "Nikon" }
+        connectionNumber = readUInt32(acceptedCommandAck.second, 0)
+        cameraGuid = acceptedCommandAck.second.copyOfRange(4, 20).toHex()
+        cameraName = decodeNullTerminatedUtf16(acceptedCommandAck.second, 20).ifBlank { "Nikon" }
         log("相机已接受连接：$cameraName，GUID=$cameraGuid", "SOCKET")
 
         val event = createSocket(connectTimeoutMs, minOf(commandTimeoutMs, 10_000))
@@ -753,7 +849,7 @@ class WifiTransport(
         event.soTimeout = PtpIpConstants.EVENT_READ_TIMEOUT_MS
         alive = true
         phase = SessionPhase.HANDSHAKE
-        eventJob = scope.launch { eventLoop(event) }
+        eventJob = scope.launch { eventLoop(event, generation) }
         log("PTP/IP Command 与 Event 通道已建立", "SOCKET")
     }
 
@@ -941,10 +1037,10 @@ class WifiTransport(
         }
     }
 
-    private suspend fun eventLoop(socket: Socket) {
+    private suspend fun eventLoop(socket: Socket, generation: Long) {
         val input = socket.getInputStream()
         val output = socket.getOutputStream()
-        while (alive) {
+        while (alive && generation == connectionGeneration) {
             try {
                 val packet = receivePacket(input)
                 when (packet.first) {
@@ -964,7 +1060,7 @@ class WifiTransport(
             } catch (_: CancellationException) {
                 break
             } catch (error: Exception) {
-                if (alive) {
+                if (alive && generation == connectionGeneration) {
                     lastError = error.message
                     log("Event通道结束：${error.message}", "EVENT", "WARN")
                     alive = false
@@ -973,6 +1069,10 @@ class WifiTransport(
                     _events.tryEmit(
                         TransportEvent.ConnectionStateChanged(false, cameraName, TransportType.WIFI),
                     )
+                    if (!continuousTransferActive) {
+                        releaseTransferLocks()
+                        CameraConnectionService.stop(context)
+                    }
                 }
                 break
             }
@@ -1191,34 +1291,69 @@ class WifiTransport(
         }.digest()
 
     private fun createSocket(connectTimeoutMs: Int, readTimeoutMs: Int): Socket {
-        val network = findNetworkForHost(host)
+        val targetAddress = runCatching { InetAddress.getByName(host) }.getOrNull()
+        val network = findNetworkForHost(host, targetAddress)
         val factory = network?.socketFactory ?: SocketFactory.getDefault()
+        val preferredLocalAddress = discoveredSocketRoute
+            ?.takeIf { it.host == host }
+            ?.localAddress
+        val localRoute = if (network == null) {
+            (targetAddress as? Inet4Address)?.let { target ->
+                findLocalRouteForTarget(target, preferredLocalAddress)
+            }
+        } else {
+            null
+        }
         if (network == null) {
-            Log.d(
-                TAG,
-                "[SOCKET] No registered Wi-Fi route covers $host; using system routing " +
-                    "(required for phone-hotspot clients on many Android devices)",
-            )
+            if (localRoute != null) {
+                Log.d(
+                    TAG,
+                    "[SOCKET] No registered Wi-Fi route covers $host; binding to " +
+                        "${localRoute.address.hostAddress} on ${localRoute.interfaceName}",
+                )
+            } else {
+                Log.d(
+                    TAG,
+                    "[SOCKET] No registered Wi-Fi route or matching local subnet covers $host; " +
+                        "using system routing",
+                )
+            }
         } else {
             Log.d(TAG, "[SOCKET] Binding $host to routed Android network $network")
         }
-        return factory.createSocket().apply {
-            tcpNoDelay = true
-            keepAlive = true
-            receiveBufferSize = 4 * 1024 * 1024
-            soTimeout = readTimeoutMs
-            connect(
-                InetSocketAddress(
-                    this@WifiTransport.host,
-                    this@WifiTransport.port,
-                ),
-                connectTimeoutMs,
+
+        val socket = factory.createSocket()
+        try {
+            socket.apply {
+                tcpNoDelay = true
+                keepAlive = true
+                receiveBufferSize = 4 * 1024 * 1024
+                soTimeout = readTimeoutMs
+                localRoute?.let { route ->
+                    bind(InetSocketAddress(route.address, 0))
+                }
+                connect(
+                    InetSocketAddress(
+                        this@WifiTransport.host,
+                        this@WifiTransport.port,
+                    ),
+                    connectTimeoutMs,
+                )
+            }
+            Log.d(
+                TAG,
+                "[SOCKET] Connected ${socket.localAddress.hostAddress}:${socket.localPort} -> " +
+                    "$host:$port",
             )
+            return socket
+        } catch (error: Exception) {
+            runCatching { socket.close() }
+            throw error
         }
     }
 
-    private fun findNetworkForHost(targetHost: String): Network? {
-        val targetAddress: InetAddress? = runCatching { InetAddress.getByName(targetHost) }.getOrNull()
+    private fun findNetworkForHost(targetHost: String, targetAddress: InetAddress?): Network? {
+        val resolvedAddress = targetAddress ?: runCatching { InetAddress.getByName(targetHost) }.getOrNull()
         val wifiNetworks = connectivityManager.allNetworks.filter { network ->
             connectivityManager.getNetworkCapabilities(network)
                 ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
@@ -1226,13 +1361,56 @@ class WifiTransport(
         return NetworkRouteSelector.select(
             candidates = wifiNetworks,
             active = connectivityManager.activeNetwork,
-            targetResolved = targetAddress != null,
+            targetResolved = resolvedAddress != null,
         ) { network ->
-            targetAddress != null &&
-                connectivityManager.getLinkProperties(network)
-                    ?.routes
-                    ?.any { route -> route.matches(targetAddress) } == true
+            resolvedAddress != null && connectivityManager.getLinkProperties(network)
+                ?.routes
+                ?.any { route ->
+                    val destination = route.destination
+                    NetworkRouteSelector.matchesDirectIpv4Route(
+                        target = resolvedAddress,
+                        destination = destination.address,
+                        prefixLength = destination.prefixLength,
+                    )
+                } == true
         }
+    }
+
+    private fun findLocalRouteForTarget(
+        targetAddress: Inet4Address,
+        preferredAddress: Inet4Address?,
+    ): LocalIpv4Route? {
+        val candidates = mutableListOf<LocalIpv4Route>()
+        val interfaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull()
+            ?: return null
+
+        while (interfaces.hasMoreElements()) {
+            val networkInterface = interfaces.nextElement()
+            val usable = runCatching {
+                networkInterface.isUp && !networkInterface.isLoopback
+            }.getOrDefault(false)
+            if (!usable) continue
+
+            val interfaceAddresses = runCatching { networkInterface.interfaceAddresses }
+                .getOrDefault(emptyList())
+            for (interfaceAddress in interfaceAddresses) {
+                val address = interfaceAddress.address as? Inet4Address ?: continue
+                if (!address.isSiteLocalAddress || address.isLoopbackAddress || address.isLinkLocalAddress) {
+                    continue
+                }
+                candidates += LocalIpv4Route(
+                    address = address,
+                    prefixLength = interfaceAddress.networkPrefixLength.toInt(),
+                    interfaceName = networkInterface.name,
+                )
+            }
+        }
+
+        return LocalAddressSelector.select(
+            target = targetAddress,
+            candidates = candidates,
+            preferredAddress = preferredAddress,
+        )
     }
 
     private fun sendPacket(output: java.io.OutputStream, type: Int, payload: ByteArray) {
@@ -1291,6 +1469,8 @@ class WifiTransport(
 
     private fun markConnected() {
         val name = cameraName ?: "Nikon"
+        acquireTransferLocks()
+        CameraConnectionService.start(context, listening = continuousTransferActive)
         _connectionState.value = TransportState.Connected(name)
         _events.tryEmit(TransportEvent.ConnectionStateChanged(true, name, TransportType.WIFI))
     }
@@ -1301,15 +1481,19 @@ class WifiTransport(
         log(message, "SOCKET", "ERROR")
     }
 
-    private fun failConnection(prefix: String, error: Exception) {
+    private suspend fun failConnection(prefix: String, error: Exception) {
         val message = "$prefix：${error.message ?: error.javaClass.simpleName}"
         lastError = message
         log(message, "SOCKET", "ERROR")
-        cleanupConnection(emitDisconnected = true)
+        cleanupConnectionAndJoin(emitDisconnected = true)
+        if (!continuousTransferActive) {
+            CameraConnectionService.stop(context)
+        }
         _connectionState.value = TransportState.Error(message)
     }
 
     private fun cleanupConnection(emitDisconnected: Boolean) {
+        connectionGeneration++
         alive = false
         pairingActive = false
         transferStopRequested = false
@@ -1346,6 +1530,19 @@ class WifiTransport(
         }
     }
 
+    private suspend fun cleanupConnectionAndJoin(
+        emitDisconnected: Boolean,
+        settleDelayMs: Long = 0,
+    ) {
+        val oldEventJob = eventJob
+        val hadConnectionResources = oldEventJob != null || commandSocket != null || eventSocket != null
+        cleanupConnection(emitDisconnected)
+        oldEventJob?.cancelAndJoin()
+        if (hadConnectionResources && settleDelayMs > 0) {
+            delay(settleDelayMs)
+        }
+    }
+
     private fun schedulePairingTimeout() {
         pairingTimeoutJob?.cancel()
         pairingTimeoutJob = scope.launch {
@@ -1355,7 +1552,7 @@ class WifiTransport(
                 val message = "等待确认相机配对码超时"
                 lastError = message
                 log(message, "PAIRING", "WARN")
-                cleanupConnection(emitDisconnected = false)
+                cleanupConnectionAndJoin(emitDisconnected = false)
                 _connectionState.value = TransportState.Error(message)
             }
         }

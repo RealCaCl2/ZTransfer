@@ -677,6 +677,7 @@ class PtpManager(context: Context) {
             val file = File(base, fileName)
 
             FileOutputStream(file).use { it.write(jpegBytes) }
+            SharedPhotoPublisher.publish(ctx, file)
 
             addLog(PtpLogLevel.INFO, "Saved: ${file.absolutePath} (%,d bytes)".format(file.length()))
             Log.d(TAG, "Saved JPEG to: ${file.absolutePath}")

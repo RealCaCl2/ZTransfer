@@ -1,0 +1,7 @@
+<resources>
+    <string name="camera_connection_channel_name">Camera connection</string>
+    <string name="camera_connection_channel_description">Keeps the Nikon Wi-Fi connection active in the background</string>
+    <string name="camera_connection_notification_title">ZTransfer camera connected</string>
+    <string name="camera_connection_notification_connected">Maintaining the camera connection</string>
+    <string name="camera_connection_notification_listening">Waiting to receive photos from the camera</string>
+</resources>

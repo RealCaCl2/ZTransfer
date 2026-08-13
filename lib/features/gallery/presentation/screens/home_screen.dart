@@ -302,22 +302,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         ?.copyWith(color: AppColors.textPrimary),
                   ),
                   const Spacer(),
-                  Tooltip(
-                    message: syncState.autoShowEnabled
-                        ? AppLocalizations.of(context)!.autoShowOn
-                        : AppLocalizations.of(context)!.autoShowOff,
-                    child: IconButton(
-                      icon: Icon(
-                        Icons.open_in_full,
-                        color: syncState.autoShowEnabled
-                            ? AppColors.accent
-                            : AppColors.textTertiary,
-                        size: 18,
-                      ),
-                      onPressed: () => ref
-                          .read(syncNotifierProvider.notifier)
-                          .toggleAutoShow(),
-                    ),
+                  _AutoShowToggle(
+                    enabled: syncState.autoShowEnabled,
+                    onPressed: () => ref
+                        .read(syncNotifierProvider.notifier)
+                        .toggleAutoShow(),
                   ),
                 ],
               ),
@@ -370,6 +359,73 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             // ── Sync status bar ────────────────────────────────────────────
             _SyncStatusBar(syncState: syncState),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AutoShowToggle extends StatelessWidget {
+  const _AutoShowToggle({
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final label = enabled ? l10n.autoShowOn : l10n.autoShowOff;
+    final color = enabled ? AppColors.accent : AppColors.textSecondary;
+
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        button: true,
+        toggled: enabled,
+        label: label,
+        child: Material(
+          color: enabled
+              ? AppColors.accent.withAlpha(22)
+              : AppColors.surfaceElevated,
+          borderRadius: BorderRadius.circular(9),
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(9),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: enabled
+                      ? AppColors.accent.withAlpha(105)
+                      : AppColors.surfaceHighlight,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    enabled
+                        ? Icons.fullscreen_rounded
+                        : Icons.fullscreen_exit_rounded,
+                    color: color,
+                    size: 17,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    label,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

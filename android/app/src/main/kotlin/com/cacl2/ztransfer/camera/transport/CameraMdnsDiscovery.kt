@@ -60,7 +60,8 @@ object CameraMdnsDiscovery {
         val name: String,
         val host: String,
         val port: Int,
-        val serviceType: String
+        val serviceType: String,
+        val localIp: String?,
     )
 
     /**
@@ -153,6 +154,7 @@ object CameraMdnsDiscovery {
                     host = host,
                     port = CAMERA_PORT,
                     serviceType = serviceType,
+                    localIp = socket.localAddress?.hostAddress,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -60,6 +61,7 @@ class CameraChannelHandler(
     private var eventSink: EventChannel.EventSink? = null
     private var eventCollectionJob: Job? = null
     private var transferJob: Job? = null
+    private var channelRegistrationGeneration = 0L
 
     /** Currently active transport. Null when disconnected. */
     @Volatile
@@ -71,9 +73,11 @@ class CameraChannelHandler(
         methodBinaryMessenger: BinaryMessenger,
         eventBinaryMessenger: BinaryMessenger,
     ) {
+        val registrationGeneration = ++channelRegistrationGeneration
         // Migrate legacy photos on first launch (non-blocking)
         scope.launch(Dispatchers.IO) {
             projectStore.migrateIfNeeded()
+            SharedPhotoPublisher.publishExistingPhotos(context)
         }
 
         // ── MethodChannel ──────────────────────────────────────────────────
@@ -90,12 +94,14 @@ class CameraChannelHandler(
         )
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                if (registrationGeneration != channelRegistrationGeneration) return
                 Log.d(TAG, "EventChannel onListen — sink=${events != null}")
                 eventSink = events
                 startEventForwarding()
             }
 
             override fun onCancel(arguments: Any?) {
+                if (registrationGeneration != channelRegistrationGeneration) return
                 Log.d(TAG, "EventChannel onCancel")
                 eventSink = null
                 eventCollectionJob?.cancel()
@@ -180,12 +186,18 @@ class CameraChannelHandler(
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
         scope.launch {
             try {
+                if (call.method in PROJECT_REQUIRED_METHODS && !ensureProjectForConnection()) {
+                    emitChannelLog(PROJECT_REQUIRED_MESSAGE, "PROJECT", "WARN")
+                    result.error("PROJECT_REQUIRED", PROJECT_REQUIRED_MESSAGE, null)
+                    return@launch
+                }
                 when (call.method) {
 
                     // ── Connection ─────────────────────────────────────────
 
                     "isConnected" -> {
-                        val connected = activeTransport?.isConnected == true
+                        val connected = activeTransport?.isConnected == true ||
+                            usbTransport.isConnected || wifiTransport.isConnected
                         result.success(connected)
                     }
 
@@ -561,6 +573,10 @@ class CameraChannelHandler(
                                 )
                                 if (scanned != null) {
                                     mdnsDeferred.cancel()
+                                    wifiTransport.rememberDiscoveredRoute(
+                                        scanned.cameraIp,
+                                        scanned.localIp,
+                                    )
                                     result.success(mapOf(
                                         "ip" to scanned.cameraIp,
                                         "cameraName" to scanned.cameraName,
@@ -570,6 +586,9 @@ class CameraChannelHandler(
                                 }
 
                                 val mdns = mdnsDeferred.await()
+                                if (mdns != null) {
+                                    wifiTransport.rememberDiscoveredRoute(mdns.host, mdns.localIp)
+                                }
                                 result.success(
                                     mdns?.let {
                                         mapOf(
@@ -584,15 +603,6 @@ class CameraChannelHandler(
                                 result.success(null)
                             }
                         }
-                    }
-
-                    "disconnect" -> {
-                        withContext(Dispatchers.IO) {
-                            stopWirelessTransfer()
-                            activeTransport?.disconnect()
-                        }
-                        activeTransport = null
-                        result.success(null)
                     }
 
                     "getTransportType" -> {
@@ -748,6 +758,22 @@ class CameraChannelHandler(
                         val deletePhotos = call.argument<Boolean>("deletePhotos")
                             ?: false
                         val ok = projectStore.deleteProject(id, deletePhotos)
+                        if (ok && projectStore.listProjects().isEmpty()) {
+                            withContext(Dispatchers.IO) {
+                                runCatching { stopWirelessTransfer() }
+                                    .onFailure { Log.w(TAG, "Failed to stop transfer after deleting last project", it) }
+                                val transport = activeTransport
+                                activeTransport = null
+                                runCatching { transport?.disconnect() }
+                                    .onFailure { Log.w(TAG, "Failed to disconnect after deleting last project", it) }
+                            }
+                            syncProjectId()
+                            emitChannelLog(
+                                "最后一个项目已删除，相机连接已断开",
+                                "PROJECT",
+                                "WARN",
+                            )
+                        }
                         result.success(ok)
                     }
 
@@ -828,6 +854,27 @@ class CameraChannelHandler(
     }
 
     // ── Connection logic ──────────────────────────────────────────────────
+
+    /**
+     * Ensures every camera session has a valid destination project.
+     *
+     * USB attach events call this directly; MethodChannel connection methods
+     * are guarded in [handleMethodCall]. If projects exist but the saved active
+     * ID is missing or stale, the newest project becomes active automatically.
+     */
+    fun ensureProjectForConnection(): Boolean {
+        val projectIds = projectStore.listProjects().map { it.id }
+        val currentProjectId = projectStore.getActiveProjectId()
+        val selectedId = ProjectConnectionPolicy.selectActiveProjectId(
+            projectIds,
+            currentProjectId,
+        ) ?: return false
+        if (selectedId != currentProjectId) {
+            projectStore.setActiveProjectId(selectedId)
+        }
+        syncProjectId()
+        return true
+    }
 
     private data class ConnectResult(
         val ok: Boolean,
@@ -1020,6 +1067,10 @@ class CameraChannelHandler(
             while (currentCoroutineContext().isActive) {
                 try {
                     val record = wifiTransport.waitForNextPhoto()
+                    if (record == null) {
+                        delay(250)
+                        continue
+                    }
                     when (wifiTransport.downloadTransferRecord(record, saveDir)) {
                         is WifiTransport.DownloadOutcome.Saved -> saved++
                         is WifiTransport.DownloadOutcome.SkippedDuplicate -> skipped++
@@ -1064,14 +1115,33 @@ class CameraChannelHandler(
         }
     }
 
-    private suspend fun stopWirelessTransfer(): Boolean {
-        val job = transferJob ?: return false
+    private fun cancelWirelessTransfer(): Job? {
+        val job = transferJob ?: return null
         transferJob = null
         wifiTransport.requestStopAndCancelActiveTransferOperation()
         job.cancel()
-        // Socket reads are blocking IO. Cancel the active PTP/IP transaction to
-        // unblock AdvancedTransfer without closing the paired camera session.
-        job.join()
+        return job
+    }
+
+    private suspend fun awaitWirelessTransferStop(job: Job) {
+        val stopped = withTimeoutOrNull(TRANSFER_STOP_JOIN_TIMEOUT_MS) {
+            job.join()
+            true
+        } == true
+        if (!stopped) {
+            emitChannelLog(
+                "接收任务未在限定时间内退出；连接流程将继续，socket 清理会负责结束旧任务",
+                "TRANSFER",
+                "WARN",
+            )
+        }
+    }
+
+    private suspend fun stopWirelessTransfer(): Boolean {
+        val job = cancelWirelessTransfer() ?: return false
+        // Socket reads do not always react to coroutine cancellation. Never let
+        // callers wait indefinitely; disconnect paths close the sockets afterward.
+        awaitWirelessTransferStop(job)
         return true
     }
 
@@ -1254,6 +1324,17 @@ class CameraChannelHandler(
 
     companion object {
         private const val TAG = "CameraChannel"
+        private const val TRANSFER_STOP_JOIN_TIMEOUT_MS = 1_500L
+        private const val PROJECT_REQUIRED_MESSAGE = "请先创建项目，再连接相机"
+        private val PROJECT_REQUIRED_METHODS = setOf(
+            "connect",
+            "connectAuto",
+            "connectWifi",
+            "connectTransfer",
+            "completePairing",
+            "runCompatibilityCheck",
+            "startTransfer",
+        )
         const val CHANNEL_NAME = "com.cacl2.ztransfer/camera"
         const val EVENT_CHANNEL_NAME = "com.cacl2.ztransfer/camera/events"
     }

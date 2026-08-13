@@ -42,8 +42,8 @@
   },
   "syncNoProjectError": "No active project. Create one first.",
 
-  "autoShowOn": "Auto-show: ON",
-  "autoShowOff": "Auto-show: OFF",
+  "autoShowOn": "Auto-fullscreen new photos · On",
+  "autoShowOff": "Auto-fullscreen new photos · Off",
 
   "phoneGallery": "Phone Gallery",
 
@@ -132,7 +132,6 @@
   "unknown": "unknown",
   "receivePhotos": "Receive",
   "stopReceiving": "Stop",
-  "disconnectCamera": "Disconnect",
   "scanNetworkCamera": "Scan for cameras",
   "scanNetworkCameraInProgress": "Scanning network...",
   "scanCurrentNetworkStatus": "Scanning the current Wi-Fi and hotspot networks...",
