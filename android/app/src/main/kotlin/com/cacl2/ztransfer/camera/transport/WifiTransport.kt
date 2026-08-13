@@ -1193,6 +1193,15 @@ class WifiTransport(
     private fun createSocket(connectTimeoutMs: Int, readTimeoutMs: Int): Socket {
         val network = findNetworkForHost(host)
         val factory = network?.socketFactory ?: SocketFactory.getDefault()
+        if (network == null) {
+            Log.d(
+                TAG,
+                "[SOCKET] No registered Wi-Fi route covers $host; using system routing " +
+                    "(required for phone-hotspot clients on many Android devices)",
+            )
+        } else {
+            Log.d(TAG, "[SOCKET] Binding $host to routed Android network $network")
+        }
         return factory.createSocket().apply {
             tcpNoDelay = true
             keepAlive = true
@@ -1214,16 +1223,16 @@ class WifiTransport(
             connectivityManager.getNetworkCapabilities(network)
                 ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
         }
-        if (targetAddress != null) {
-            wifiNetworks.firstOrNull { network ->
+        return NetworkRouteSelector.select(
+            candidates = wifiNetworks,
+            active = connectivityManager.activeNetwork,
+            targetResolved = targetAddress != null,
+        ) { network ->
+            targetAddress != null &&
                 connectivityManager.getLinkProperties(network)
                     ?.routes
                     ?.any { route -> route.matches(targetAddress) } == true
-            }?.let { return it }
         }
-        val active = connectivityManager.activeNetwork
-        if (active != null && active in wifiNetworks) return active
-        return wifiNetworks.firstOrNull()
     }
 
     private fun sendPacket(output: java.io.OutputStream, type: Int, payload: ByteArray) {
