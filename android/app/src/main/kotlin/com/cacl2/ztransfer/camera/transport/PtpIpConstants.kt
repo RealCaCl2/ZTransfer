@@ -162,6 +162,9 @@ object PtpIpConstants {
     /** Event socket read timeout (ms). Short to allow checking alive flag. */
     const val EVENT_READ_TIMEOUT_MS = 2_000
 
+    /** Give AdvancedTransfer a chance to return the same object before cancelling it for event fallback. */
+    const val OBJECT_EVENT_TRANSFER_GRACE_MS = 250L
+
     /** Maximum connection attempts used by the service flow. */
     const val MAX_RECONNECT_ATTEMPTS = 3
 

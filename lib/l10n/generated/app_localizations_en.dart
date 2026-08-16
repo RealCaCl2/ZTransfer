@@ -237,6 +237,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stopReceiving => 'Stop';
 
   @override
+  String get disconnectCamera => 'Disconnect camera';
+
+  @override
+  String get disconnectCameraFailed =>
+      'The camera did not confirm disconnect. Keep the hotspot on and try again.';
+
+  @override
   String get scanNetworkCamera => 'Scan for cameras';
 
   @override

@@ -19,6 +19,8 @@ class CameraRepository {
 
   Future<String?> connect() => _platform.connect();
 
+  Future<bool> disconnect() => _platform.disconnect();
+
   // ── events ───────────────────────────────────────────────────────────────
 
   Stream<CameraEvent> get eventStream => _platform.eventStream;

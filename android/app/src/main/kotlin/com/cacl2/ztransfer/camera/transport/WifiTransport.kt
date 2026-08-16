@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.File
@@ -125,6 +126,7 @@ class WifiTransport(
     private val commandMutex = Mutex()
     private val eventWriteMutex = Mutex()
     private val commandWriteLock = Any()
+    private val pendingObjectEvents = PtpIpObjectEventBuffer()
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -431,6 +433,8 @@ class WifiTransport(
     suspend fun waitForNextPhoto(
         timeoutMs: Int = PtpIpConstants.TRANSFER_COMMAND_TIMEOUT_MS,
     ): TransferRecord? {
+        pollObjectEventRecord()?.let { return it }
+
         val selectedTransferMode = privateValue(
             PRIVATE_VALUE_GROUP_TRANSFER,
             PRIVATE_VALUE_SELECTED_TRANSFER,
@@ -440,8 +444,22 @@ class WifiTransport(
             parameters = listOf(selectedTransferMode),
             timeoutMs = timeoutMs,
         )
+        if (result.responseCode == PtpIpConstants.RC_TransactionCancelled) {
+            pollObjectEventRecord()?.let {
+                log(
+                    "AdvancedTransfer 已由 ObjectAdded 事件接管，继续下载 " +
+                        "handle=0x${it.objectHandle.toUInt().toString(16)}",
+                    "TRANSFER",
+                )
+                return it
+            }
+            if (transferStopRequested) {
+                throw CancellationException("无线图片监听已请求停止")
+            }
+        }
         checkOk(result, "AdvancedTransfer")
         if (result.data.isEmpty()) {
+            pollObjectEventRecord()?.let { return it }
             log("AdvancedTransfer 暂无待传对象，继续监听", "TRANSFER")
             return null
         }
@@ -454,6 +472,7 @@ class WifiTransport(
             captureDate = cursor.ptpString(),
             modificationDate = cursor.ptpString(),
         )
+        pendingObjectEvents.discard(record.objectHandle)
         log(
             "收到待传对象：${record.filename.ifBlank { handleName(record.objectHandle) }} " +
                 "handle=0x${record.objectHandle.toUInt().toString(16)} size=${record.reportedSize}",
@@ -588,6 +607,7 @@ class WifiTransport(
     fun endContinuousTransfer() {
         continuousTransferActive = false
         transferStopRequested = false
+        pendingObjectEvents.clear()
         currentTransferRateBytesPerSecond = 0.0
         currentTransferProgress = 0.0
         currentTransferBytes = 0L
@@ -665,21 +685,61 @@ class WifiTransport(
         return false
     }
 
+    /**
+     * Close the Nikon PTP session and only tear down sockets after the camera acknowledges it.
+     * Returns false without changing the connected state when that acknowledgement is missing,
+     * allowing the user to keep the hotspot up and retry safely.
+     */
+    suspend fun disconnectGracefully(): Boolean = disconnectInternal(forceCleanupOnFailure = false)
+
     override suspend fun disconnect() {
-        connectionMutex.withLock {
+        disconnectInternal(forceCleanupOnFailure = true)
+    }
+
+    private suspend fun disconnectInternal(forceCleanupOnFailure: Boolean): Boolean {
+        return connectionMutex.withLock {
             val shouldEmit = isConnected || phase != SessionPhase.DISCONNECTED
-            if (alive && sessionOpen) {
-                runCatching {
-                    closeSession(timeoutMs = PtpIpConstants.DISCONNECT_CLOSE_TIMEOUT_MS)
-                }.onFailure {
-                    log("断开前 CloseSession 失败，将强制关闭双通道：${it.message}", "SOCKET", "WARN")
+            requestStopAndCancelActiveTransferOperation()
+            var closeConfirmed = !sessionOpen
+            if (sessionOpen && alive) {
+                val closeCompleted = try {
+                    withTimeoutOrNull(
+                        PtpIpConstants.DISCONNECT_CLOSE_TIMEOUT_MS.toLong() + 500L,
+                    ) {
+                        closeSession(timeoutMs = PtpIpConstants.DISCONNECT_CLOSE_TIMEOUT_MS)
+                        true
+                    } == true
+                } catch (error: Exception) {
+                    log(
+                        "断开前 CloseSession 失败：${error.message}",
+                        "SOCKET",
+                        "WARN",
+                    )
+                    false
                 }
+                closeConfirmed = closeCompleted
+            }
+            if (!closeConfirmed && !forceCleanupOnFailure) {
+                log(
+                    "相机未确认 CloseSession；保持热点和 PTP/IP 连接，请重试安全断开",
+                    "SOCKET",
+                    "ERROR",
+                )
+                return@withLock false
+            }
+            if (!closeConfirmed) {
+                log(
+                    "CloseSession 未确认，内部连接切换将强制清理双通道",
+                    "SOCKET",
+                    "WARN",
+                )
             }
             cleanupConnectionAndJoin(
                 emitDisconnected = shouldEmit,
                 settleDelayMs = PtpIpConstants.DISCONNECT_SETTLE_DELAY_MS,
             )
             CameraConnectionService.stop(context)
+            closeConfirmed
         }
     }
 
@@ -918,6 +978,12 @@ class WifiTransport(
     private suspend fun closeSession(timeoutMs: Int = PtpIpConstants.CMD_TIMEOUT_MS) {
         if (!sessionOpen) return
         val result = command(PtpIpConstants.OP_CloseSession, timeoutMs = timeoutMs)
+        if (result.responseCode == PtpIpConstants.RC_SessionNotOpen) {
+            sessionOpen = false
+            requireNativeCore().onSessionClosed()
+            log("相机报告 SessionNotOpen，PTP Session 已视为关闭", "PTP")
+            return
+        }
         checkOk(result, "CloseSession")
         sessionOpen = false
         requireNativeCore().onSessionClosed()
@@ -1080,18 +1146,82 @@ class WifiTransport(
     }
 
     private fun handleEventPacket(payload: ByteArray) {
-        val cursor = Cursor(payload, "Event")
-        if (cursor.remaining < 6) return
-        val code = cursor.u16()
-        val transactionId = cursor.u32()
-        val parameters = buildList {
-            while (cursor.remaining >= 4) add(cursor.u32())
+        val event = PtpIpEventDecoder.decode(payload)
+        if (event == null) {
+            log("Event 数据不足：${payload.size} bytes", "EVENT", "WARN")
+            return
         }
+        val code = event.code
+        val transactionId = event.transactionId
+        val parameters = event.parameters
         val suffix = if (parameters.isEmpty()) "" else " 参数=${parameters.joinToString()}"
         log(
             "相机事件 0x${code.toString(16)} tx=$transactionId$suffix",
             "EVENT",
         )
+
+        if (code != PtpIpConstants.EVT_ObjectAdded || !continuousTransferActive) return
+        val handle = parameters.firstOrNull()?.toInt() ?: return
+        if (!pendingObjectEvents.offer(handle)) return
+
+        log(
+            "ObjectAdded 已进入接收队列：handle=0x${handle.toUInt().toString(16)}",
+            "EVENT",
+        )
+        scope.launch {
+            // Most Nikon bodies return the same handle through AdvancedTransfer.
+            // Only cancel that blocking operation when it has not completed after
+            // a short grace period; the queued event then becomes the fallback.
+            delay(PtpIpConstants.OBJECT_EVENT_TRANSFER_GRACE_MS)
+            if (continuousTransferActive && pendingObjectEvents.contains(handle)) {
+                cancelAdvancedTransferForObjectEvent()
+            }
+        }
+    }
+
+    private fun pollObjectEventRecord(): TransferRecord? = pendingObjectEvents.poll()?.let { handle ->
+        TransferRecord(
+            recordType = 0,
+            objectHandle = handle,
+            cameraPath = "",
+            reportedSize = 0,
+            captureDate = "",
+            modificationDate = "",
+        )
+    }
+
+    private fun cancelAdvancedTransferForObjectEvent(): Boolean {
+        return try {
+            var cancelledTransactionId: Long? = null
+            synchronized(commandWriteLock) {
+                val transactionId = activeTransactionId
+                val operationCode = activeOperationCode
+                val output = commandOutput
+                if (!alive || transactionId == null ||
+                    operationCode != PtpIpConstants.OP_AdvancedTransfer || output == null
+                ) {
+                    return@synchronized
+                }
+                val payload = ByteArrayOutputStream().apply {
+                    writeUInt32(transactionId)
+                }.toByteArray()
+                sendPacket(output, PtpIpConstants.PKT_CANCEL, payload)
+                cancelledTransactionId = transactionId
+            }
+            if (cancelledTransactionId != null) {
+                log(
+                    "ObjectAdded 回退已取消阻塞的 AdvancedTransfer " +
+                        "tx=$cancelledTransactionId",
+                    "EVENT",
+                )
+                true
+            } else {
+                false
+            }
+        } catch (error: Exception) {
+            log("ObjectAdded 回退取消失败：${error.message}", "EVENT", "WARN")
+            false
+        }
     }
 
     private suspend fun readRemoteObjectInfo(handle: Int): RemoteObjectInfo {
@@ -1509,6 +1639,7 @@ class WifiTransport(
         commandOutput = null
         activeTransactionId = null
         activeOperationCode = null
+        pendingObjectEvents.clear()
 
         nativeCore?.let { core ->
             if (sessionOpen) runCatching { core.onSessionClosed() }

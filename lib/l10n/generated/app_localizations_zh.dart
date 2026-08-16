@@ -217,6 +217,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get stopReceiving => '停止';
 
   @override
+  String get disconnectCamera => '断开相机连接';
+
+  @override
+  String get disconnectCameraFailed => '相机未确认断开。请保持手机热点开启并重试。';
+
+  @override
   String get scanNetworkCamera => '扫描网络中的相机';
 
   @override

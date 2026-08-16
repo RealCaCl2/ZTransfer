@@ -132,6 +132,8 @@
   "unknown": "unknown",
   "receivePhotos": "Receive",
   "stopReceiving": "Stop",
+  "disconnectCamera": "Disconnect camera",
+  "disconnectCameraFailed": "The camera did not confirm disconnect. Keep the hotspot on and try again.",
   "scanNetworkCamera": "Scan for cameras",
   "scanNetworkCameraInProgress": "Scanning network...",
   "scanCurrentNetworkStatus": "Scanning the current Wi-Fi and hotspot networks...",

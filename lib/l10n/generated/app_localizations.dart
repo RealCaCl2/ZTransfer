@@ -482,6 +482,18 @@ abstract class AppLocalizations {
   /// **'Stop'**
   String get stopReceiving;
 
+  /// No description provided for @disconnectCamera.
+  ///
+  /// In en, this message translates to:
+  /// **'Disconnect camera'**
+  String get disconnectCamera;
+
+  /// No description provided for @disconnectCameraFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The camera did not confirm disconnect. Keep the hotspot on and try again.'**
+  String get disconnectCameraFailed;
+
   /// No description provided for @scanNetworkCamera.
   ///
   /// In en, this message translates to:

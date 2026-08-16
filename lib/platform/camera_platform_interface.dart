@@ -115,6 +115,7 @@ abstract class CameraPlatform {
   Future<String?> connect();
 
   /// Tear down the PTP session.
+  Future<bool> disconnect();
 
   /// Broadcast stream of PTP events (ObjectAdded, state changes, logs).
   Stream<CameraEvent> get eventStream;
@@ -176,6 +177,8 @@ class _DefaultCameraPlatform extends CameraPlatform {
   Future<String?> connect() async => null;
 
   @override
+  Future<bool> disconnect() async => false;
+
   @override
   Stream<CameraEvent> get eventStream => const Stream.empty();
 

@@ -657,6 +657,16 @@ class CameraMethodChannel extends CameraPlatform {
     }
   }
 
+  @override
+  Future<bool> disconnect() async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('disconnect') ?? false;
+    } catch (e, st) {
+      appLogger.e('disconnect failed', error: e, stackTrace: st);
+      return false;
+    }
+  }
+
   // ── Event parsing ─────────────────────────────────────────────────────────
 
   CameraEvent _parseEvent(Map<dynamic, dynamic> data) {

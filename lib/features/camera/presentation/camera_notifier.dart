@@ -230,6 +230,15 @@ class CameraNotifier extends _$CameraNotifier {
     }
   }
 
+  Future<bool> disconnect() async {
+    final repo = ref.read(cameraRepositoryProvider);
+    final disconnected = await repo.disconnect();
+    if (disconnected) {
+      state = const CameraState();
+    }
+    return disconnected;
+  }
+
   ConnectionType _parseTransportType(String? str) {
     return switch (str?.toUpperCase()) {
       'USB' => ConnectionType.usb,

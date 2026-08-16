@@ -73,6 +73,8 @@
   "unknown": "未知",
   "receivePhotos": "接收",
   "stopReceiving": "停止",
+  "disconnectCamera": "断开相机连接",
+  "disconnectCameraFailed": "相机未确认断开。请保持手机热点开启并重试。",
   "scanNetworkCamera": "扫描网络中的相机",
   "scanNetworkCameraInProgress": "正在扫描网络...",
   "scanCurrentNetworkStatus": "正在扫描当前 Wi-Fi 与热点网段...",

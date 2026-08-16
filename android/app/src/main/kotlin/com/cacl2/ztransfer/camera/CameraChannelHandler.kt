@@ -477,8 +477,14 @@ class CameraChannelHandler(
                     }
 
                     "stopTransfer" -> {
+                        val wasRunning = transferJob?.isActive == true
                         val stopped = withContext(Dispatchers.IO) { stopWirelessTransfer() }
-                        result.success(mapOf("status" to if (stopped) "stopped" else "not_running"))
+                        val status = when {
+                            !wasRunning -> "not_running"
+                            stopped -> "stopped"
+                            else -> "stop_failed"
+                        }
+                        result.success(mapOf("status" to status))
                     }
 
                     "getTransferStatus" -> {
@@ -603,6 +609,27 @@ class CameraChannelHandler(
                                 result.success(null)
                             }
                         }
+                    }
+
+                    "disconnect" -> {
+                        val disconnected = withContext(Dispatchers.IO) {
+                            // The transfer coroutine is the only command-socket reader. Let it
+                            // consume Nikon's TransactionCancelled response before CloseSession.
+                            if (!stopWirelessTransfer()) return@withContext false
+                            val transport = activeTransport
+                                ?: wifiTransport.takeIf { it.isConnected }
+                                ?: usbTransport.takeIf { it.isConnected }
+                                ?: return@withContext true
+                            val ok = if (transport === wifiTransport) {
+                                wifiTransport.disconnectGracefully()
+                            } else {
+                                transport.disconnect()
+                                true
+                            }
+                            if (ok) activeTransport = null
+                            ok
+                        }
+                        result.success(disconnected)
                     }
 
                     "getTransportType" -> {
@@ -1115,33 +1142,22 @@ class CameraChannelHandler(
         }
     }
 
-    private fun cancelWirelessTransfer(): Job? {
-        val job = transferJob ?: return null
-        transferJob = null
+    private suspend fun stopWirelessTransfer(): Boolean {
+        val job = transferJob ?: return true
         wifiTransport.requestStopAndCancelActiveTransferOperation()
-        job.cancel()
-        return job
-    }
-
-    private suspend fun awaitWirelessTransferStop(job: Job) {
         val stopped = withTimeoutOrNull(TRANSFER_STOP_JOIN_TIMEOUT_MS) {
             job.join()
             true
         } == true
         if (!stopped) {
             emitChannelLog(
-                "接收任务未在限定时间内退出；连接流程将继续，socket 清理会负责结束旧任务",
+                "相机未确认取消接收事务；为保护相机会话，保持连接并等待重试",
                 "TRANSFER",
-                "WARN",
+                "ERROR",
             )
+            return false
         }
-    }
-
-    private suspend fun stopWirelessTransfer(): Boolean {
-        val job = cancelWirelessTransfer() ?: return false
-        // Socket reads do not always react to coroutine cancellation. Never let
-        // callers wait indefinitely; disconnect paths close the sockets afterward.
-        awaitWirelessTransferStop(job)
+        if (transferJob === job) transferJob = null
         return true
     }
 
@@ -1324,7 +1340,7 @@ class CameraChannelHandler(
 
     companion object {
         private const val TAG = "CameraChannel"
-        private const val TRANSFER_STOP_JOIN_TIMEOUT_MS = 1_500L
+        private const val TRANSFER_STOP_JOIN_TIMEOUT_MS = 5_000L
         private const val PROJECT_REQUIRED_MESSAGE = "请先创建项目，再连接相机"
         private val PROJECT_REQUIRED_METHODS = setOf(
             "connect",
