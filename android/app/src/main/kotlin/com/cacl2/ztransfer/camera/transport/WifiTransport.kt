@@ -277,7 +277,17 @@ class WifiTransport(
 
             val advancedTransfer = privateOpcode(PRIVATE_OP_ADVANCED_TRANSFER)
             if (advancedTransfer !in info.supportedOperations) {
-                throw PtpException("相机未报告 AdvancedTransfer 能力")
+                // Z 30 firmware can accept the already-paired initiator and open a
+                // session while temporarily omitting this private operation from
+                // GetDeviceInfo. The operation itself is the authoritative
+                // capability check; rejecting the connection here strands a valid
+                // profile and makes the UI look as though pairing failed.
+                log(
+                    "相机未在 GetDeviceInfo 中列出 AdvancedTransfer；" +
+                        "保留连接并在开始监听时直接验证私有操作",
+                    "PTP",
+                    "WARN",
+                )
             }
 
             phase = SessionPhase.TRANSFER
@@ -665,6 +675,29 @@ class WifiTransport(
         }
     }
 
+    /**
+     * Release a session whose active transfer transaction ignored PTP/IP Cancel.
+     *
+     * Once the command reader is stuck there is no safe way to send CloseSession
+     * on the same socket. Closing both channels is the only bounded way to unblock
+     * the worker and, importantly, release the camera for a fresh connection.
+     */
+    suspend fun forceDisconnectAfterTransferStopTimeout() {
+        connectionMutex.withLock {
+            val shouldEmit = isConnected || phase != SessionPhase.DISCONNECTED
+            log(
+                "相机未确认取消接收事务；正在重置 PTP/IP 连接以释放相机会话",
+                "TRANSFER",
+                "WARN",
+            )
+            cleanupConnectionAndJoin(
+                emitDisconnected = shouldEmit,
+                settleDelayMs = PtpIpConstants.DISCONNECT_SETTLE_DELAY_MS,
+            )
+            CameraConnectionService.stop(context)
+        }
+    }
+
     fun isRecoverableConnectionFailure(error: Throwable): Boolean {
         var current: Throwable? = error
         while (current != null) {
@@ -685,19 +718,8 @@ class WifiTransport(
         return false
     }
 
-    /**
-     * Close the Nikon PTP session and only tear down sockets after the camera acknowledges it.
-     * Returns false without changing the connected state when that acknowledgement is missing,
-     * allowing the user to keep the hotspot up and retry safely.
-     */
-    suspend fun disconnectGracefully(): Boolean = disconnectInternal(forceCleanupOnFailure = false)
-
     override suspend fun disconnect() {
-        disconnectInternal(forceCleanupOnFailure = true)
-    }
-
-    private suspend fun disconnectInternal(forceCleanupOnFailure: Boolean): Boolean {
-        return connectionMutex.withLock {
+        connectionMutex.withLock {
             val shouldEmit = isConnected || phase != SessionPhase.DISCONNECTED
             requestStopAndCancelActiveTransferOperation()
             var closeConfirmed = !sessionOpen
@@ -719,17 +741,9 @@ class WifiTransport(
                 }
                 closeConfirmed = closeCompleted
             }
-            if (!closeConfirmed && !forceCleanupOnFailure) {
-                log(
-                    "相机未确认 CloseSession；保持热点和 PTP/IP 连接，请重试安全断开",
-                    "SOCKET",
-                    "ERROR",
-                )
-                return@withLock false
-            }
             if (!closeConfirmed) {
                 log(
-                    "CloseSession 未确认，内部连接切换将强制清理双通道",
+                    "CloseSession 未确认；正在强制清理双通道以释放相机会话",
                     "SOCKET",
                     "WARN",
                 )
@@ -739,7 +753,6 @@ class WifiTransport(
                 settleDelayMs = PtpIpConstants.DISCONNECT_SETTLE_DELAY_MS,
             )
             CameraConnectionService.stop(context)
-            closeConfirmed
         }
     }
 

@@ -1,7 +1,7 @@
 name: ztransfer
 description: ZTransfer — Nikon Z Series USB and Wi-Fi photo sync and management tool.
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.2+3
 
 environment:
   sdk: ^3.5.0
